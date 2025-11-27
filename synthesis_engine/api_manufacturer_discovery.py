@@ -1,42 +1,8 @@
 import time
 import os
+from datetime import datetime
 import requests
-from agno.models.groq import Groq
 from urllib.parse import urlparse
-
-
-class GoogleSearchTool:
-    """Custom Google Search tool for agno Agent"""
-    
-    def __init__(self, api_key: str, cse_id: str):
-        self.api_key = api_key
-        self.cse_id = cse_id
-    
-    def google_search(self, query: str, max_results: int = 10) -> str:
-        """Search Google Custom Search Engine and return results as formatted text"""
-        try:
-            url = "https://www.googleapis.com/customsearch/v1"
-            params = {
-                "key": self.api_key,
-                "cx": self.cse_id,
-                "q": query,
-                "num": min(max_results, 10)  # Google allows max 10 per request
-            }
-            res = requests.get(url, params=params, timeout=15)
-            data = res.json()
-            items = data.get("items", [])
-            
-            # Format results as text for the agent
-            results_text = ""
-            for item in items:
-                title = item.get("title", "")
-                link = item.get("link", "")
-                snippet = item.get("snippet", "")
-                results_text += f"Title: {title}\nURL: {link}\nSnippet: {snippet}\n\n"
-            
-            return results_text if results_text else "No results found."
-        except Exception as e:
-            return f"Search error: {str(e)}"
 
 
 class ApiManufacturerDiscoveryService:
@@ -54,14 +20,20 @@ class ApiManufacturerDiscoveryService:
             self.groq_client = GroqClient(api_key=groq_api_key)
         else:
             self.groq_client = None
-    
-        # Initialize Google Search tool
-        google_api_key = os.getenv("GOOGLE_API_KEY")
-        google_cse_id = os.getenv("GOOGLE_CSE_ID")
-        if google_api_key and google_cse_id:
-            self.google_tool = GoogleSearchTool(google_api_key, google_cse_id)
+
+        # Initialize Supabase connection details (REST interface)
+        self.supabase_url = os.getenv("SUPABASE_URL", "").rstrip("/")
+        self.supabase_key = os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_ANON_KEY")
+        self.supabase_table = os.getenv("SUPABASE_MANUFACTURERS_TABLE", "API_manufacturers")
+        if self.supabase_url and self.supabase_key:
+            self.supabase_headers = {
+                "apikey": self.supabase_key,
+                "Authorization": f"Bearer {self.supabase_key}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            }
         else:
-            self.google_tool = None
+            self.supabase_headers = None
     
         self.trusted_domains = {
             "pharmacompass.com",
@@ -85,7 +57,7 @@ class ApiManufacturerDiscoveryService:
                 "error": "API name and country are required for discovery.",
             }
 
-        existing_records = self.manufacturer_service.query(api_name, country)
+        existing_records = self._fetch_existing_records(api_name, country)
         skip_list = sorted(
             {
                 (rec.get("manufacturer") or "").strip().lower()
@@ -100,20 +72,20 @@ class ApiManufacturerDiscoveryService:
         discovered_records = []
         for batch in batches:
             discovered_records.extend(
-                self._discover_with_google(api_name, country, batch)
+                self._discover_with_groq(api_name, country, batch)
             )
             if discovered_records:
                 break  # stop once we find fresh data
 
         if discovered_records:
-            insert_result = self.manufacturer_service.insert_records(discovered_records, "groq_discovery")
+            insert_result = self._insert_records(discovered_records, "groq_discovery")
             newly_inserted = insert_result["rows"]
             inserted_count = insert_result["inserted"]
         else:
             newly_inserted = []
             inserted_count = 0
 
-        refreshed = self.manufacturer_service.query(api_name, country)
+        refreshed = self._fetch_existing_records(api_name, country)
 
         return {
             "success": True,
@@ -123,102 +95,46 @@ class ApiManufacturerDiscoveryService:
             "inserted_count": inserted_count,
         }
 
-    def _discover_with_google(self, api_name, country, skip_batch):
-        records = []
-        if not self.google_tool:
-            return records
+    def _discover_with_groq(self, api_name, country, skip_batch):
+        if not self.groq_client:
+            return []
 
         try:
-            time.sleep(1)  # Small delay to respect rate limits
-            query = self._build_google_query(api_name, country)
-            search_results = self._google_search(query)
-            if not search_results:
-                return records
-
-            groq_output = self._analyze_with_groq(
-                api_name, search_results, country, skip_batch
+            time.sleep(1)  # Small delay to avoid hammering Groq API
+            groq_output = self._run_groq_extraction(
+                api_name=api_name,
+                country=country,
+                skip_list=skip_batch,
             )
             if groq_output:
-                records.extend(
-                    self._extract_manufacturers(
-                        groq_output, api_name, country, skip_batch
-                    )
-                )
-            else:
-                # Attempt a lightweight heuristic extraction if Groq is unavailable
-                records.extend(
-                    self._extract_from_search_snippets(
-                        search_results, api_name, country, skip_batch
-                    )
+                return self._extract_manufacturers(
+                    groq_output, api_name, country, skip_batch
                 )
         except Exception:
-            # Continue even if Google search fails
             pass
-
-        return records
-
-    def _build_google_query(self, api_name, country):
-        trusted_sites = [
-            "pharmacompass.com",
-            "pharmaoffer.com",
-            "fda.gov",
-            "ema.europa.eu",
-            "cdsco.gov.in",
-        ]
-        site_clause = " OR ".join(f"site:{domain}" for domain in trusted_sites)
-        return (
-            f"\"{api_name}\" API manufacturers \"{country}\" {site_clause}"
-        )
-
-    def _google_search(self, query: str) -> str:
-        """Perform Google Custom Search and return formatted results"""
-        try:
-            url = "https://www.googleapis.com/customsearch/v1"
-            params = {
-                "key": self.google_tool.api_key,
-                "cx": self.google_tool.cse_id,
-                "q": query,
-                "num": 10
-            }
-            res = requests.get(url, params=params, timeout=15)
-            data = res.json()
-            items = data.get("items", [])
-            
-            # Format results as text
-            results_text = ""
-            for item in items:
-                title = item.get("title", "")
-                link = item.get("link", "")
-                snippet = item.get("snippet", "")
-                results_text += f"Title: {title}\nURL: {link}\nSnippet: {snippet}\n\n"
-            
-            return results_text if results_text else None
-        except Exception:
-            return None
+        return []
     
-    def _analyze_with_groq(self, api_name: str, search_results: str, country: str, skip_list: list) -> str:
-        """Use Groq to analyze Google search results and extract manufacturers"""
+    def _run_groq_extraction(self, api_name: str, country: str, skip_list: list) -> str:
+        """Use Groq directly to research and extract manufacturers"""
         if not self.groq_client:
             return None
             
         skip_clause = ", ".join(skip_list[:10]) if skip_list else "None"  # Limit skip list size
+        trusted_clause = ", ".join(sorted(self.trusted_domains))
         
         prompt = f"""
-You are a pharmaceutical business intelligence expert. Extract API manufacturers from the following search results for {api_name} in {country}.
+You are a pharmaceutical business intelligence expert. Identify legitimate API manufacturers for "{api_name}" located in "{country}".
 
 Skip these known manufacturers: {skip_clause}
 
-Search Results:
-{search_results}
-
-Return ONLY a markdown table with these exact columns:
-| manufacturers | country | usdmf | cep | source_name | source_url |
-
 Requirements:
-- source_url must be an HTTPS link from a trusted domain (PharmaCompass, Pharmaoffer, FDA, EMA, CDSCO)
-- source_name should be the website name
-- Only include manufacturers that appear in the search results
-- Focus on manufacturers in {country}
+- Provide only manufacturers that produce the API (not formulations) and operate in {country}.
+- Verify each manufacturer using information from trusted public sources ({trusted_clause}). If no trusted citation exists, exclude the manufacturer.
+- Return results as a markdown table with columns:
+  | manufacturers | country | usdmf | cep | source_name | source_url |
+- Provide HTTPS URLs pointing directly to the evidence page. Prefer regulatory listings or manufacturer catalogs.
+- usdmf/cep should be "Yes"/"No"/"Unknown".
+- Do not include duplicate manufacturers or any entry from the skip list.
 """
         
         try:
@@ -277,47 +193,6 @@ Requirements:
                     )
         return manufacturers
 
-    def _extract_from_search_snippets(self, search_results, api_name, country, skip_batch):
-        """
-        Simple fallback parser that looks for manufacturer names in Google snippets.
-        This is less reliable than Groq extraction but ensures we return something when LLM analysis fails.
-        """
-        manufacturers = []
-        existing_lower = {name.lower() for name in skip_batch}
-        entries = [
-            block.strip()
-            for block in search_results.split("\n\n")
-            if block.strip().startswith("Title:")
-        ]
-
-        for entry in entries:
-            lines = entry.splitlines()
-            title = next((line[6:].strip() for line in lines if line.startswith("Title:")), "")
-            url = next((line[5:].strip() for line in lines if line.startswith("URL:")), "")
-            snippet = next((line[8:].strip() for line in lines if line.startswith("Snippet:")), "")
-
-            if not (title and url and self._is_valid_source(url)):
-                continue
-
-            candidate = title.split("-")[0].split("|")[0].strip()
-            if not candidate or candidate.lower() in existing_lower:
-                continue
-
-            inferred_country = country if country.lower() in snippet.lower() else country
-            manufacturers.append(
-                {
-                    "api_name": api_name,
-                    "manufacturer": candidate,
-                    "country": inferred_country,
-                    "usdmf": "Unknown",
-                    "cep": "Unknown",
-                    "source_name": urlparse(url).netloc,
-                    "source_url": url,
-                }
-            )
-
-        return manufacturers
-
     def _is_valid_source(self, url: str) -> bool:
         if not url:
             return False
@@ -326,4 +201,65 @@ Requirements:
             return False
         domain = parsed.netloc.lower()
         return any(domain == trusted or domain.endswith(f".{trusted}") for trusted in self.trusted_domains)
+
+    # ---------- Supabase helpers ----------
+
+    def _use_supabase(self):
+        return bool(self.supabase_headers and self.supabase_url)
+
+    def _fetch_existing_records(self, api_name, country):
+        if self._use_supabase():
+            try:
+                params = {
+                    "select": "api_name,manufacturer,country,usdmf,cep,source_name,source_url",
+                    "api_name": f"ilike.*{api_name}*",
+                    "country": f"ilike.*{country}*",
+                }
+                response = requests.get(
+                    f"{self.supabase_url}/rest/v1/{self.supabase_table}",
+                    headers=self.supabase_headers,
+                    params=params,
+                    timeout=20,
+                )
+                response.raise_for_status()
+                return response.json()
+            except Exception:
+                pass
+        return self.manufacturer_service.query(api_name, country)
+
+    def _insert_records(self, records, source_label):
+        if not records:
+            return {"inserted": 0, "rows": []}
+
+        if self._use_supabase():
+            try:
+                payload = []
+                import_ts = datetime.utcnow().isoformat()
+                for rec in records:
+                    payload.append(
+                        {
+                            "api_name": rec.get("api_name", ""),
+                            "manufacturer": rec.get("manufacturer", ""),
+                            "country": rec.get("country", ""),
+                            "usdmf": rec.get("usdmf", ""),
+                            "cep": rec.get("cep", ""),
+                            "source_name": rec.get("source_name", ""),
+                            "source_url": rec.get("source_url", ""),
+                            "source_file": source_label,
+                            "imported_at": import_ts,
+                        }
+                    )
+                response = requests.post(
+                    f"{self.supabase_url}/rest/v1/{self.supabase_table}",
+                    headers={**self.supabase_headers, "Prefer": "return=representation"},
+                    json=payload,
+                    timeout=20,
+                )
+                response.raise_for_status()
+                data = response.json()
+                return {"inserted": len(data), "rows": data}
+            except Exception:
+                pass
+
+        return self.manufacturer_service.insert_records(records, source_label)
 

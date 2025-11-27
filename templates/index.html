@@ -814,7 +814,14 @@
                 </div>
                 
                 <div id="apiBuyersResults" class="results-section" style="display: none; margin-top: 25px;">
-                    <h3 class="results-title">API Buyer Search Results</h3>
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                        <h3 class="results-title" style="margin: 0;">API Buyer Search Results</h3>
+                        <div id="apiBuyersDownloadButtons" style="display: none;">
+                            <button onclick="downloadApiBuyers(); return false;" class="download-btn" style="padding: 8px 16px; background-color: #004d40; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 14px;">
+                                📊 Download Excel
+                            </button>
+                        </div>
+                    </div>
                     <div id="apiBuyersTableContainer"></div>
                     <div id="apiBuyersInfo" class="info-box" style="display: none; margin-top: 20px;"></div>
                 </div>
@@ -859,7 +866,14 @@
                     </button>
 
                     <div id="localManufacturersResults" class="results-section" style="display: none; margin-top: 25px;">
-                        <h3 class="results-title">Local Database Records</h3>
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                            <h3 class="results-title" style="margin: 0;">Local Database Records</h3>
+                            <div id="localManufacturersDownloadButtons" style="display: none;">
+                                <button onclick="downloadLocalManufacturers(); return false;" class="download-btn" style="padding: 8px 16px; background-color: #004d40; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 14px;">
+                                    📊 Download Excel
+                                </button>
+                            </div>
+                        </div>
                         <div id="localManufacturersTableContainer"></div>
                         <div id="localManufacturersInfo" class="info-box" style="display: none; margin-top: 20px;"></div>
                     </div>
@@ -894,7 +908,14 @@
 
                     <!-- Results Section -->
                     <div id="newManufacturersResults" class="results-section" style="display: none; margin-top: 25px;">
-                        <h3 class="results-title">New Manufacturer Discoveries</h3>
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                            <h3 class="results-title" style="margin: 0;">New Manufacturer Discoveries</h3>
+                            <div id="newManufacturersDownloadButtons" style="display: none;">
+                                <button onclick="downloadNewManufacturers(); return false;" class="download-btn" style="padding: 8px 16px; background-color: #004d40; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 14px;">
+                                    📊 Download Excel
+                                </button>
+                            </div>
+                        </div>
                         <div id="newManufacturersTableContainer"></div>
                         <div id="newManufacturersInfo" class="info-box" style="display: none; margin-top: 20px;"></div>
                     </div>
@@ -1571,6 +1592,9 @@
             // and no image display.
         }
 
+        // Store current search parameters for download
+        let currentApiBuyerSearch = { api_name: '', country: '' };
+
         // API Buyers functionality
         async function findApiBuyers() {
             const apiName = document.getElementById('apiBuyerName').value.trim();
@@ -1581,6 +1605,9 @@
                 return;
             }
 
+            // Store search parameters for download
+            currentApiBuyerSearch = { api_name: apiName, country: country };
+
             const findBuyersBtn = document.getElementById('findBuyersBtn');
             const progressSection = document.getElementById('apiBuyersProgressSection');
             const progressBar = document.getElementById('apiBuyersProgressBar');
@@ -1588,6 +1615,7 @@
             const resultsDiv = document.getElementById('apiBuyersResults');
             const tableContainer = document.getElementById('apiBuyersTableContainer');
             const infoBox = document.getElementById('apiBuyersInfo');
+            const downloadButtons = document.getElementById('apiBuyersDownloadButtons');
 
             // Reset UI and show loading
             findBuyersBtn.disabled = true;
@@ -1623,6 +1651,11 @@
                 if (data.success) {
                     updateApiBuyersProgress(100, 'Search complete!');
                     displayApiBuyersResults(data.existing_data, data.newly_found_companies);
+                    // Show download buttons if there's data
+                    if ((data.existing_data && data.existing_data.length > 0) || 
+                        (data.newly_found_companies && data.newly_found_companies.length > 0)) {
+                        downloadButtons.style.display = 'block';
+                    }
                 } else {
                     throw new Error(data.error || 'API Buyer search failed.');
                 }
@@ -1744,6 +1777,78 @@
             progressSection.style.display = 'none';
         }
 
+        async function downloadApiBuyers() {
+            console.log('Download button clicked');
+            if (!currentApiBuyerSearch.api_name || !currentApiBuyerSearch.country) {
+                alert('Please search for API buyers first before downloading.');
+                return;
+            }
+
+            console.log('Downloading for:', currentApiBuyerSearch);
+            
+            try {
+                const response = await fetch('/api/download_buyers', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        api_name: currentApiBuyerSearch.api_name,
+                        country: currentApiBuyerSearch.country,
+                        format: 'excel'
+                    })
+                });
+
+                console.log('Response status:', response.status);
+                console.log('Response headers:', response.headers);
+
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    console.error('Error response:', errorText);
+                    let errorData;
+                    try {
+                        errorData = JSON.parse(errorText);
+                    } catch {
+                        errorData = { error: errorText };
+                    }
+                    throw new Error(errorData.error || 'Download failed');
+                }
+
+                // Get filename from Content-Disposition header or create one
+                const contentDisposition = response.headers.get('Content-Disposition');
+                let filename = `API_Buyers_${currentApiBuyerSearch.api_name}_${currentApiBuyerSearch.country}.xlsx`;
+                if (contentDisposition) {
+                    const filenameMatch = contentDisposition.match(/filename="(.+)"/);
+                    if (filenameMatch) {
+                        filename = filenameMatch[1];
+                    }
+                }
+
+                console.log('Downloading file:', filename);
+
+                // Create blob and download
+                const blob = await response.blob();
+                console.log('Blob created, size:', blob.size);
+                
+                if (blob.size === 0) {
+                    throw new Error('Downloaded file is empty');
+                }
+                
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = filename;
+                document.body.appendChild(a);
+                a.click();
+                window.URL.revokeObjectURL(url);
+                document.body.removeChild(a);
+                console.log('Download completed');
+            } catch (error) {
+                console.error('Download error:', error);
+                alert('Failed to download: ' + error.message);
+            }
+        }
+
         document.addEventListener('DOMContentLoaded', () => {
             setupManufacturerTabs();
         });
@@ -1763,6 +1868,9 @@
             });
         }
 
+        // Store current search parameters for download
+        let currentManufacturerSearch = { api_name: '', country: '' };
+
         // Existing manufacturers (Excel-backed DB)
         async function loadLocalManufacturers() {
             const apiName = document.getElementById('localApiManufacturerName').value.trim();
@@ -1773,10 +1881,14 @@
                 return;
             }
 
+            // Store search parameters for download
+            currentManufacturerSearch = { api_name: apiName, country: country };
+
             const btn = document.getElementById('loadLocalManufacturersBtn');
             const resultsDiv = document.getElementById('localManufacturersResults');
             const tableContainer = document.getElementById('localManufacturersTableContainer');
             const infoBox = document.getElementById('localManufacturersInfo');
+            const downloadButtons = document.getElementById('localManufacturersDownloadButtons');
 
             btn.disabled = true;
             btn.innerHTML = '<div class="spinner"></div> Loading...';
@@ -1805,6 +1917,11 @@
                 renderLocalManufacturers(data.records || []);
                 infoBox.style.display = 'block';
                 infoBox.innerHTML = `<p><strong>Total matches:</strong> ${(data.records || []).length}</p>`;
+                
+                // Show download buttons if there's data
+                if (data.records && data.records.length > 0) {
+                    downloadButtons.style.display = 'block';
+                }
             } catch (error) {
                 console.error('Local manufacturers error:', error);
                 infoBox.style.display = 'block';
@@ -1818,14 +1935,18 @@
         function renderLocalManufacturers(data) {
             const resultsDiv = document.getElementById('localManufacturersResults');
             const tableContainer = document.getElementById('localManufacturersTableContainer');
+            const downloadButtons = document.getElementById('localManufacturersDownloadButtons');
             resultsDiv.style.display = 'block';
 
             if (!data || data.length === 0) {
                 tableContainer.innerHTML = '<p class="info-box">No manufacturers found in the local database for this query.</p>';
+                downloadButtons.style.display = 'none';
                 return;
             }
 
             tableContainer.innerHTML = createManufacturerTableHtml(data);
+            // Show download buttons when data is loaded
+            downloadButtons.style.display = 'block';
         }
 
         // New manufacturer discovery
@@ -1837,6 +1958,9 @@
                 alert('Please enter both API Name and Country.');
                 return;
             }
+
+            // Store search parameters for download
+            currentManufacturerSearch = { api_name: apiName, country: country };
 
             const progressSection = document.getElementById('newManufacturersProgressSection');
             const progressBar = document.getElementById('newManufacturersProgressBar');
@@ -1858,7 +1982,7 @@
             searchBtn.innerHTML = '<div class="spinner"></div> Discovering...';
 
             try {
-                updateNewManufacturersProgress(30, 'Querying Google Custom Search...');
+                updateNewManufacturersProgress(30, 'Launching Groq research pipeline...');
                 const response = await fetch('/api/discover_manufacturers', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -1906,6 +2030,7 @@
         function renderNewManufacturersResults(existingData, newData) {
             const resultsDiv = document.getElementById('newManufacturersResults');
             const tableContainer = document.getElementById('newManufacturersTableContainer');
+            const downloadButtons = document.getElementById('newManufacturersDownloadButtons');
             resultsDiv.style.display = 'block';
 
             let html = '';
@@ -1935,6 +2060,11 @@
             }
 
             tableContainer.innerHTML = html;
+            
+            // Show download buttons if there's data
+            if ((existingData && existingData.length > 0) || (newData && newData.length > 0)) {
+                downloadButtons.style.display = 'block';
+            }
         }
 
         function createManufacturerTableHtml(data) {
@@ -1990,6 +2120,148 @@
             if (clearInputs) {
                 document.getElementById('newApiManufacturerName').value = '';
                 document.getElementById('newApiManufacturerCountry').value = '';
+            }
+        }
+
+        async function downloadLocalManufacturers() {
+            console.log('Download Local Manufacturers button clicked');
+            if (!currentManufacturerSearch.api_name || !currentManufacturerSearch.country) {
+                alert('Please search for manufacturers first before downloading.');
+                return;
+            }
+
+            console.log('Downloading for:', currentManufacturerSearch);
+            
+            try {
+                const response = await fetch('/api/download_manufacturers', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        api_name: currentManufacturerSearch.api_name,
+                        country: currentManufacturerSearch.country,
+                        format: 'excel'
+                    })
+                });
+
+                console.log('Response status:', response.status);
+
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    console.error('Error response:', errorText);
+                    let errorData;
+                    try {
+                        errorData = JSON.parse(errorText);
+                    } catch {
+                        errorData = { error: errorText };
+                    }
+                    throw new Error(errorData.error || 'Download failed');
+                }
+
+                // Get filename from Content-Disposition header or create one
+                const contentDisposition = response.headers.get('Content-Disposition');
+                let filename = `API_Manufacturers_${currentManufacturerSearch.api_name}_${currentManufacturerSearch.country}.xlsx`;
+                if (contentDisposition) {
+                    const filenameMatch = contentDisposition.match(/filename="(.+)"/);
+                    if (filenameMatch) {
+                        filename = filenameMatch[1];
+                    }
+                }
+
+                console.log('Downloading file:', filename);
+
+                // Create blob and download
+                const blob = await response.blob();
+                console.log('Blob created, size:', blob.size);
+                
+                if (blob.size === 0) {
+                    throw new Error('Downloaded file is empty');
+                }
+                
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = filename;
+                document.body.appendChild(a);
+                a.click();
+                window.URL.revokeObjectURL(url);
+                document.body.removeChild(a);
+                console.log('Download completed');
+            } catch (error) {
+                console.error('Download error:', error);
+                alert('Failed to download: ' + error.message);
+            }
+        }
+
+        async function downloadNewManufacturers() {
+            console.log('Download New Manufacturers button clicked');
+            if (!currentManufacturerSearch.api_name || !currentManufacturerSearch.country) {
+                alert('Please discover manufacturers first before downloading.');
+                return;
+            }
+
+            console.log('Downloading for:', currentManufacturerSearch);
+            
+            try {
+                const response = await fetch('/api/download_manufacturers', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        api_name: currentManufacturerSearch.api_name,
+                        country: currentManufacturerSearch.country,
+                        format: 'excel'
+                    })
+                });
+
+                console.log('Response status:', response.status);
+
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    console.error('Error response:', errorText);
+                    let errorData;
+                    try {
+                        errorData = JSON.parse(errorText);
+                    } catch {
+                        errorData = { error: errorText };
+                    }
+                    throw new Error(errorData.error || 'Download failed');
+                }
+
+                // Get filename from Content-Disposition header or create one
+                const contentDisposition = response.headers.get('Content-Disposition');
+                let filename = `API_Manufacturers_${currentManufacturerSearch.api_name}_${currentManufacturerSearch.country}.xlsx`;
+                if (contentDisposition) {
+                    const filenameMatch = contentDisposition.match(/filename="(.+)"/);
+                    if (filenameMatch) {
+                        filename = filenameMatch[1];
+                    }
+                }
+
+                console.log('Downloading file:', filename);
+
+                // Create blob and download
+                const blob = await response.blob();
+                console.log('Blob created, size:', blob.size);
+                
+                if (blob.size === 0) {
+                    throw new Error('Downloaded file is empty');
+                }
+                
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = filename;
+                document.body.appendChild(a);
+                a.click();
+                window.URL.revokeObjectURL(url);
+                document.body.removeChild(a);
+                console.log('Download completed');
+            } catch (error) {
+                console.error('Download error:', error);
+                alert('Failed to download: ' + error.message);
             }
         }
     </script>
